@@ -1,0 +1,10 @@
+
+google-auth
+google-api-python-client
+python-dotenv
+streamlit
+google-generativeai
+langchain
+langchain-google-genai
+langchain-community
+pydantic
