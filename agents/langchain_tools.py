@@ -177,6 +177,35 @@ class AddRowInput(BaseModel):
     row_data: dict = Field(description="Dictionary of column names and values for the new row")
     position: Optional[int] = Field(default=None, description="Position to insert row (0-based index)")
 
+class MergeWorksheetsInput(BaseModel):
+    """Input for merge_worksheets tool"""
+    sheet_names: list = Field(description="List of sheet names to merge")
+    merge_type: str = Field(default="vertical", description="Type of merge: 'vertical' (stack/append) or 'horizontal' (join)")
+    join_column: Optional[str] = Field(default=None, description="Column to join on for horizontal merge")
+    join_type: str = Field(default="inner", description="Join type for horizontal merge: 'inner', 'outer', 'left', 'right'")
+    target_sheet: Optional[str] = Field(default=None, description="Name of target sheet to save merged data")
+
+class DataValidationInput(BaseModel):
+    """Input for data_validation tool"""
+    validation_rules: dict = Field(description="Dictionary of validation rules per column")
+    fix_issues: bool = Field(default=False, description="Whether to automatically fix common issues")
+    target_sheet: Optional[str] = Field(default=None, description="Name of target sheet to save validation results")
+
+class FormulaEvaluationInput(BaseModel):
+    """Input for formula_evaluation tool"""
+    formula: str = Field(description="Formula expression to evaluate (e.g., 'salary * 1.1 + bonus')")
+    result_column: str = Field(description="Name of column to store the formula results")
+    target_sheet: Optional[str] = Field(default=None, description="Name of target sheet to save results")
+
+class ChartGenerationInput(BaseModel):
+    """Input for chart_generation tool"""
+    chart_type: str = Field(description="Type of chart: 'bar', 'line', 'pie', 'scatter', 'histogram'")
+    x_column: str = Field(description="Column for X-axis data")
+    y_column: Optional[str] = Field(default=None, description="Column for Y-axis data (not needed for pie charts)")
+    group_column: Optional[str] = Field(default=None, description="Column to group by for multiple series")
+    title: Optional[str] = Field(default=None, description="Chart title")
+    target_sheet: Optional[str] = Field(default=None, description="Name of target sheet to save chart data")
+
 @tool(args_schema=FilterDataInput)
 def filter_sheets_data(condition: str, target_sheet: Optional[str] = None) -> str:
     """
@@ -447,6 +476,416 @@ def write_custom_results(data: str, sheet_name: str, start_row: int = 1, start_c
     except Exception as e:
         return f"Write custom results error: {e}"
 
+@tool(args_schema=MergeWorksheetsInput)
+def merge_worksheets(sheet_names: list, merge_type: str = "vertical", join_column: Optional[str] = None, 
+                    join_type: str = "inner", target_sheet: Optional[str] = None) -> str:
+    """
+    Merge multiple worksheets together either vertically (stack/append) or horizontally (join).
+    
+    - sheet_names: List of sheet names to merge
+    - merge_type: 'vertical' to stack sheets, 'horizontal' to join them
+    - join_column: Column to join on for horizontal merge
+    - join_type: 'inner', 'outer', 'left', 'right' for horizontal merge
+    - target_sheet: Name of target sheet to save merged data
+    
+    Returns confirmation message with merge details.
+    """
+    try:
+        if len(sheet_names) < 2:
+            return "Error: At least 2 sheets are required for merging."
+        
+        # Read all sheets
+        dataframes = []
+        for sheet_name in sheet_names:
+            try:
+                df = sheets_service.read_sheet(sheet_name)
+                if not df.empty:
+                    df['_source_sheet'] = sheet_name  # Add source tracking
+                    dataframes.append(df)
+            except Exception as e:
+                return f"Error reading sheet '{sheet_name}': {e}"
+        
+        if not dataframes:
+            return "Error: No valid data found in specified sheets."
+        
+        # Perform merge based on type
+        if merge_type.lower() == "vertical":
+            # Vertical merge (stack/append)
+            try:
+                merged_df = pd.concat(dataframes, ignore_index=True, sort=False)
+                operation_desc = f"Vertically merged {len(dataframes)} sheets"
+            except Exception as e:
+                return f"Error in vertical merge: {e}"
+                
+        elif merge_type.lower() == "horizontal":
+            # Horizontal merge (join)
+            if not join_column:
+                return "Error: join_column is required for horizontal merge."
+            
+            try:
+                merged_df = dataframes[0]
+                for df in dataframes[1:]:
+                    if join_column not in df.columns:
+                        return f"Error: join_column '{join_column}' not found in all sheets."
+                    merged_df = pd.merge(merged_df, df, on=join_column, how=join_type, suffixes=('', '_dup'))
+                
+                operation_desc = f"Horizontally merged {len(dataframes)} sheets on '{join_column}' using {join_type} join"
+            except Exception as e:
+                return f"Error in horizontal merge: {e}"
+        else:
+            return f"Error: Invalid merge_type '{merge_type}'. Use 'vertical' or 'horizontal'."
+        
+        # Write result
+        if target_sheet is None:
+            target_sheet = f"merged_{'_'.join(sheet_names[:2])}"
+        
+        write_result = sheets_service.write_to_sheet(merged_df, target_sheet)
+        return f"{operation_desc}. Created {len(merged_df)} rows in '{target_sheet}'. {write_result}"
+        
+    except Exception as e:
+        return f"Merge worksheets error: {e}"
+
+@tool(args_schema=DataValidationInput)
+def data_validation(validation_rules: dict, fix_issues: bool = False, target_sheet: Optional[str] = None) -> str:
+    """
+    Validate data according to specified rules and optionally fix common issues.
+    
+    - validation_rules: Dictionary with column names as keys and validation rules as values
+      Example: {"age": {"type": "int", "min": 0, "max": 120}, "email": {"pattern": "@"}}
+    - fix_issues: Whether to automatically fix common data issues
+    - target_sheet: Name of target sheet to save validation results
+    
+    Returns validation report with issues found and fixes applied.
+    """
+    try:
+        current_sheet = getattr(data_validation, '_current_sheet', 'Sheet1')
+        df = sheets_service.read_sheet(current_sheet)
+        
+        if df.empty:
+            return f"Source sheet '{current_sheet}' is empty or has no data to validate."
+        
+        validation_report = []
+        issues_found = 0
+        fixes_applied = 0
+        
+        # Create a copy for potential fixes
+        df_fixed = df.copy() if fix_issues else None
+        
+        for column, rules in validation_rules.items():
+            if column not in df.columns:
+                validation_report.append(f"❌ Column '{column}' not found in sheet")
+                continue
+            
+            col_data = df[column]
+            col_issues = []
+            
+            # Check for missing values
+            missing_count = col_data.isnull().sum()
+            if missing_count > 0:
+                col_issues.append(f"{missing_count} missing values")
+                issues_found += missing_count
+                if fix_issues and 'default' in rules:
+                    df_fixed[column].fillna(rules['default'], inplace=True)
+                    fixes_applied += missing_count
+            
+            # Type validation
+            if 'type' in rules:
+                expected_type = rules['type']
+                if expected_type == 'int':
+                    non_numeric = pd.to_numeric(col_data, errors='coerce').isnull().sum() - missing_count
+                    if non_numeric > 0:
+                        col_issues.append(f"{non_numeric} non-integer values")
+                        issues_found += non_numeric
+                        if fix_issues:
+                            df_fixed[column] = pd.to_numeric(df_fixed[column], errors='coerce')
+                            fixes_applied += non_numeric
+                
+                elif expected_type == 'float':
+                    non_numeric = pd.to_numeric(col_data, errors='coerce').isnull().sum() - missing_count
+                    if non_numeric > 0:
+                        col_issues.append(f"{non_numeric} non-numeric values")
+                        issues_found += non_numeric
+            
+            # Range validation
+            if 'min' in rules or 'max' in rules:
+                numeric_data = pd.to_numeric(col_data, errors='coerce')
+                if 'min' in rules:
+                    below_min = (numeric_data < rules['min']).sum()
+                    if below_min > 0:
+                        col_issues.append(f"{below_min} values below minimum {rules['min']}")
+                        issues_found += below_min
+                
+                if 'max' in rules:
+                    above_max = (numeric_data > rules['max']).sum()
+                    if above_max > 0:
+                        col_issues.append(f"{above_max} values above maximum {rules['max']}")
+                        issues_found += above_max
+            
+            # Pattern validation
+            if 'pattern' in rules:
+                pattern = rules['pattern']
+                no_match = ~col_data.astype(str).str.contains(pattern, na=False)
+                no_match_count = no_match.sum()
+                if no_match_count > 0:
+                    col_issues.append(f"{no_match_count} values don't match pattern '{pattern}'")
+                    issues_found += no_match_count
+            
+            # Add column report
+            if col_issues:
+                validation_report.append(f"❌ {column}: {', '.join(col_issues)}")
+            else:
+                validation_report.append(f"✅ {column}: No issues found")
+        
+        # Create summary report
+        summary = f"""
+Data Validation Report for '{current_sheet}':
+Total rows: {len(df)}
+Total issues found: {issues_found}
+"""
+        
+        if fix_issues and fixes_applied > 0:
+            summary += f"Fixes applied: {fixes_applied}\n"
+        
+        summary += "\nColumn Details:\n" + "\n".join(validation_report)
+        
+        # Write results if target sheet specified
+        if target_sheet:
+            # Create validation results DataFrame
+            results_data = {
+                'Column': [],
+                'Issues_Found': [],
+                'Status': []
+            }
+            
+            for column, rules in validation_rules.items():
+                if column in df.columns:
+                    col_data = df[column]
+                    total_issues = col_data.isnull().sum()
+                    
+                    if 'type' in rules and rules['type'] in ['int', 'float']:
+                        total_issues += pd.to_numeric(col_data, errors='coerce').isnull().sum() - col_data.isnull().sum()
+                    
+                    results_data['Column'].append(column)
+                    results_data['Issues_Found'].append(total_issues)
+                    results_data['Status'].append('❌ Issues Found' if total_issues > 0 else '✅ Valid')
+            
+            results_df = pd.DataFrame(results_data)
+            write_result = sheets_service.write_to_sheet(results_df, target_sheet)
+            summary += f"\n\nValidation results saved to '{target_sheet}'. {write_result}"
+        
+        # Write fixed data back if fixes were applied
+        if fix_issues and fixes_applied > 0:
+            fixed_sheet = f"{current_sheet}_fixed"
+            write_result = sheets_service.write_to_sheet(df_fixed, fixed_sheet)
+            summary += f"\nFixed data saved to '{fixed_sheet}'. {write_result}"
+        
+        return summary
+        
+    except Exception as e:
+        return f"Data validation error: {e}"
+
+@tool(args_schema=FormulaEvaluationInput)
+def formula_evaluation(formula: str, result_column: str, target_sheet: Optional[str] = None) -> str:
+    """
+    Evaluate a formula expression and add results as a new column.
+    
+    - formula: Mathematical/logical expression using column names (e.g., 'salary * 1.1 + bonus')
+    - result_column: Name of the new column to store results
+    - target_sheet: Name of target sheet to save results
+    
+    Supports mathematical operations, pandas functions, and conditional logic.
+    
+    Returns confirmation message with formula evaluation details.
+    """
+    try:
+        current_sheet = getattr(formula_evaluation, '_current_sheet', 'Sheet1')
+        df = sheets_service.read_sheet(current_sheet)
+        
+        if df.empty:
+            return f"Source sheet '{current_sheet}' is empty or has no data for formula evaluation."
+        
+        # Try to evaluate the formula
+        try:
+            # Use pandas eval for safe formula evaluation
+            df[result_column] = df.eval(formula)
+            evaluation_success = True
+            error_count = 0
+        except Exception as eval_error:
+            # If eval fails, try alternative approaches
+            try:
+                # Handle some common formula patterns manually
+                if '+' in formula or '-' in formula or '*' in formula or '/' in formula:
+                    # Simple arithmetic
+                    df[result_column] = df.eval(formula)
+                    evaluation_success = True
+                    error_count = 0
+                else:
+                    return f"Formula evaluation error: {eval_error}"
+            except Exception as e2:
+                return f"Formula evaluation error: {e2}"
+        
+        # Check for any errors in results (NaN values)
+        error_count = df[result_column].isnull().sum()
+        
+        # Write results
+        if target_sheet is None:
+            target_sheet = current_sheet  # Update current sheet
+        
+        write_result = sheets_service.write_to_sheet(df, target_sheet)
+        
+        success_message = f"Formula '{formula}' evaluated successfully. Added column '{result_column}' with {len(df)} calculated values."
+        if error_count > 0:
+            success_message += f" Note: {error_count} rows resulted in errors (null values)."
+        
+        success_message += f" {write_result}"
+        return success_message
+        
+    except Exception as e:
+        return f"Formula evaluation error: {e}"
+
+@tool(args_schema=ChartGenerationInput)
+def chart_generation(chart_type: str, x_column: str, y_column: Optional[str] = None, 
+                    group_column: Optional[str] = None, title: Optional[str] = None, 
+                    target_sheet: Optional[str] = None) -> str:
+    """
+    Generate chart data and summary statistics for visualization.
+    
+    - chart_type: 'bar', 'line', 'pie', 'scatter', 'histogram'
+    - x_column: Column for X-axis data
+    - y_column: Column for Y-axis data (optional for pie charts)
+    - group_column: Column to group by for multiple series
+    - title: Chart title
+    - target_sheet: Name of target sheet to save chart data
+    
+    Creates processed data suitable for chart creation and provides insights.
+    
+    Returns chart data summary and insights.
+    """
+    try:
+        current_sheet = getattr(chart_generation, '_current_sheet', 'Sheet1')
+        df = sheets_service.read_sheet(current_sheet)
+        
+        if df.empty:
+            return f"Source sheet '{current_sheet}' is empty or has no data for chart generation."
+        
+        # Validate required columns
+        available_cols = list(df.columns)
+        missing_cols = []
+        
+        if x_column not in available_cols:
+            missing_cols.append(f"x_column '{x_column}'")
+        if y_column and y_column not in available_cols:
+            missing_cols.append(f"y_column '{y_column}'")
+        if group_column and group_column not in available_cols:
+            missing_cols.append(f"group_column '{group_column}'")
+        
+        if missing_cols:
+            return f"Chart generation error: Missing columns: {', '.join(missing_cols)}. Available columns: {available_cols}"
+        
+        chart_data = None
+        insights = []
+        
+        if chart_type.lower() == 'pie':
+            # Pie chart - count or sum by category
+            if y_column:
+                chart_data = df.groupby(x_column)[y_column].sum().reset_index()
+                chart_data.columns = ['Category', 'Value']
+                insights.append(f"Total {y_column}: {chart_data['Value'].sum()}")
+            else:
+                chart_data = df[x_column].value_counts().reset_index()
+                chart_data.columns = ['Category', 'Count']
+                insights.append(f"Total categories: {len(chart_data)}")
+            
+        elif chart_type.lower() == 'bar':
+            if group_column:
+                chart_data = df.groupby([x_column, group_column])[y_column].sum().reset_index()
+                insights.append(f"Grouped by {x_column} and {group_column}")
+            else:
+                if y_column:
+                    chart_data = df.groupby(x_column)[y_column].sum().reset_index()
+                else:
+                    chart_data = df[x_column].value_counts().reset_index()
+                    chart_data.columns = [x_column, 'Count']
+            
+        elif chart_type.lower() in ['line', 'scatter']:
+            if not y_column:
+                return f"Error: y_column is required for {chart_type} charts."
+            
+            if group_column:
+                chart_data = df[[x_column, y_column, group_column]].copy()
+                insights.append(f"Multiple series by {group_column}")
+            else:
+                chart_data = df[[x_column, y_column]].copy()
+            
+            # Add basic statistics
+            if pd.api.types.is_numeric_dtype(df[y_column]):
+                insights.extend([
+                    f"{y_column} - Mean: {df[y_column].mean():.2f}",
+                    f"{y_column} - Min: {df[y_column].min()}, Max: {df[y_column].max()}"
+                ])
+        
+        elif chart_type.lower() == 'histogram':
+            if not y_column:
+                y_column = x_column  # Use same column for histogram
+            
+            # Create histogram bins
+            if pd.api.types.is_numeric_dtype(df[y_column]):
+                chart_data = pd.DataFrame()
+                hist_data = df[y_column].dropna()
+                chart_data['Bin_Range'] = pd.cut(hist_data, bins=10).astype(str)
+                chart_data = chart_data['Bin_Range'].value_counts().reset_index()
+                chart_data.columns = ['Range', 'Frequency']
+                insights.extend([
+                    f"Data points: {len(hist_data)}",
+                    f"Mean: {hist_data.mean():.2f}",
+                    f"Std Dev: {hist_data.std():.2f}"
+                ])
+            else:
+                return f"Error: Column '{y_column}' must be numeric for histogram."
+        
+        else:
+            return f"Error: Unsupported chart type '{chart_type}'. Use: bar, line, pie, scatter, histogram."
+        
+        # Add chart metadata
+        chart_info = pd.DataFrame([
+            ['Chart Type', chart_type],
+            ['X Column', x_column],
+            ['Y Column', y_column or 'N/A'],
+            ['Group Column', group_column or 'N/A'],
+            ['Title', title or f'{chart_type.title()} Chart'],
+            ['Data Points', len(df)],
+            ['Generated From', current_sheet]
+        ], columns=['Property', 'Value'])
+        
+        # Combine chart data with metadata
+        final_data = pd.concat([
+            chart_info,
+            pd.DataFrame([['', '']]),  # Spacer
+            chart_data
+        ], ignore_index=True)
+        
+        # Write results
+        if target_sheet is None:
+            target_sheet = f"{current_sheet}_chart_{chart_type}"
+        
+        write_result = sheets_service.write_to_sheet(final_data, target_sheet)
+        
+        summary = f"Generated {chart_type} chart data for '{x_column}'"
+        if y_column:
+            summary += f" vs '{y_column}'"
+        if group_column:
+            summary += f" grouped by '{group_column}'"
+        
+        summary += f". {write_result}"
+        
+        if insights:
+            summary += f"\n\nInsights:\n" + "\n".join(f"• {insight}" for insight in insights)
+        
+        return summary
+        
+    except Exception as e:
+        return f"Chart generation error: {e}"
+
 # List of all tools for easy import
 SHEETS_TOOLS = [
     filter_sheets_data,
@@ -456,7 +895,11 @@ SHEETS_TOOLS = [
     add_column_to_sheet,
     add_row_to_sheet,
     get_sheet_info,
-    write_custom_results
+    write_custom_results,
+    merge_worksheets,
+    data_validation,
+    formula_evaluation,
+    chart_generation
 ]
 
 def set_current_sheet_for_tools(sheet_name: str):

@@ -39,12 +39,20 @@ with st.sidebar:
 • "Sort by date descending"
 • "Add a bonus column that's 10% of salary"
 • "Add a new employee: John Doe, age 30, salary 75000"
+• "Merge Sheet1 and Sheet2 vertically"
+• "Validate data: age 18-65, salary > 0"
+• "Evaluate formula: total = price * quantity * 1.1"
+• "Create bar chart showing sales by region"
 
 **Enhanced Features:**
 • Conversation memory - remembers context
 • Better error handling and recovery
 • Structured tool calling with validation
 • Automatic sheet context awareness
+• Multi-sheet operations and data merging
+• Advanced data validation with auto-fixing
+• Formula evaluation with mathematical expressions
+• Chart data generation with statistical insights
 """
             st.markdown(info)
         except Exception as e:
@@ -87,7 +95,11 @@ with col1:
         "Create pivot table with regions as rows",
         "Sort by date descending",
         "Add a bonus column that's 10% of salary",
-        "Show me sheet information"
+        "Show me sheet information",
+        "Merge Sheet1 and Sheet2 vertically",
+        "Validate data with age between 18-65 and salary > 0",
+        "Evaluate formula: total_cost = price * quantity * 1.15",
+        "Create a bar chart showing sales by region"
     ]
     
     selected_example = st.selectbox("📝 Or choose an example query:", [""] + example_queries)
@@ -120,6 +132,22 @@ with col2:
     ➕ **Adding Data:**
     - "Add column for 15% tax calculation"
     - "Add new employee John, age 25, salary 50000"
+    
+    🔗 **Merging Sheets:**
+    - "Merge Sheet1 and Sheet2 vertically"
+    - "Join sales data with customer data on customer_id"
+    
+    ✅ **Data Validation:**
+    - "Validate that ages are between 18-65"
+    - "Check emails contain @ symbol and fix issues"
+    
+    🧮 **Formula Evaluation:**
+    - "Calculate total = price * quantity + tax"
+    - "Add bonus column as 10% of base salary"
+    
+    📊 **Chart Generation:**
+    - "Create bar chart of sales by region"
+    - "Generate pie chart showing product distribution"
     """)
 
 # Process query

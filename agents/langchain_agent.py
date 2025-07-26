@@ -57,6 +57,10 @@ Your capabilities include:
 5. **Column Management**: Add new columns with formulas or default values
 6. **Row Management**: Add new rows with specific data
 7. **Custom Results**: Write analysis results to specific sheet locations
+8. **Worksheet Merging**: Combine multiple worksheets vertically (stack) or horizontally (join)
+9. **Data Validation**: Validate data quality and automatically fix common issues
+10. **Formula Evaluation**: Evaluate complex mathematical and logical formulas
+11. **Chart Generation**: Create chart data with statistical insights for visualization
 
 **Guidelines:**
 - Always get sheet information first to understand the data structure
@@ -66,7 +70,7 @@ Your capabilities include:
 - Provide clear feedback about what operations were performed
 - If unsure about column names or data structure, use the get_sheet_info tool first
 
-**Available Tools:** filter, aggregate, pivot, sort, add_column, add_row, get_info, write_results
+**Available Tools:** filter, aggregate, pivot, sort, add_column, add_row, get_info, write_results, merge_worksheets, data_validation, formula_evaluation, chart_generation
 """
 
         # Create prompt template
